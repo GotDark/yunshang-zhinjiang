@@ -800,8 +800,13 @@ function drawLoom(){
     for(let r=0;r<t.h;r++)for(let c=0;c<t.w;c++) if(t.arr[r][c]) ctx.fillRect((ghost.x+c)*CELL+1,(ghost.y+r)*CELL+1,CELL-2,CELL-2);
     ctx.restore(); }
   if(weaving&&an.row<ROWS){ const y=an.row*CELL,x=Math.min(N*CELL,an.x*CELL);
-    ctx.save(); ctx.fillStyle="#E3A93C"; ctx.fillRect(0,y-1,Math.max(2,x),2);
-    ctx.fillStyle="#fff3d0"; ctx.fillRect(x,y-5,9,9); ctx.restore(); }
+    ctx.save();
+    ctx.fillStyle="rgba(227,169,60,.22)"; ctx.fillRect(0,Math.max(0,y-7),Math.max(2,x),14);      /* 织造光晕 */
+    ctx.fillStyle="rgba(227,169,60,.85)"; ctx.fillRect(0,Math.max(0,y-2),Math.max(2,x),4);       /* 已织金线 */
+    ctx.fillStyle="rgba(255,243,208,.30)"; ctx.beginPath(); ctx.arc(x,y,11,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle="#fff3d0"; ctx.beginPath(); ctx.arc(x,y,6,0,Math.PI*2); ctx.fill();             /* 梭子 */
+    ctx.fillStyle="#E3A93C"; ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fill();
+    ctx.restore(); }
 }
 function refreshAll(){ drawLoom(); drawScarf(); updateStats(); }
 
@@ -2198,6 +2203,28 @@ function normalizeGrid(colors){                 // 兜底：若误写入 hex 色
       for(let i=0;i<colors.length;i++){ if(colors[i]===v){ best=i; break; } }
       G[y][x]=best; } }
 }
+/* 去孤立杂点：一个同色邻居都没有的格子判定为噪声（8 邻域检查） */
+function despeckle(src, mode){
+  const out = src.map(function(r){ return r.slice(); });
+  const NB = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+  const N0 = src.length;
+  const quad = (mode==="quad"), lr = (mode==="lr"||quad), tb = (mode==="tb"||quad);
+  for(let y=1;y<N0-1;y++) for(let x=1;x<N0-1;x++){
+    const v = src[y][x];
+    if(!v) continue;
+    let same = 0;
+    for(let i=0;i<NB.length;i++){
+      if(src[y+NB[i][1]][x+NB[i][0]] === v) same++;
+    }
+    if(same === 0){                                  /* 孤立 → 清除，并同步清掉镜像位置（保持对称） */
+      out[y][x] = 0;
+      if(lr) out[y][N0-1-x] = 0;
+      if(tb) out[N0-1-y][x] = 0;
+      if(quad) out[N0-1-y][N0-1-x] = 0;
+    }
+  }
+  return out;
+}
 function buildParams(p){
   P0 = PAL[p.palette] || PAL.heidi;
   const colors = P0.c;
@@ -2210,23 +2237,37 @@ function buildParams(p){
   drawCentre(p,colors,R);
   drawCorners(p,colors,R);
   drawBands(p,colors,R);
-  if(p.symmetry==="quad"){                       // 四向对称
-    const half=Math.ceil(N/2);
-    for(let y=0;y<N;y++) for(let x=0;x<half;x++){ const v=G[y][x];
-      if(v) { G[y][N-1-x]=v; G[N-1-y][x]=v; G[N-1-y][N-1-x]=v; } }
-  } else if(p.symmetry==="lr"){
-    for(let y=0;y<N;y++) for(let x=0;x<Math.ceil(N/2);x++){ const v=G[y][x]; if(v) G[y][N-1-x]=v; }
-  } else if(p.symmetry==="tb"){
-    for(let y=0;y<Math.ceil(N/2);y++) for(let x=0;x<N;x++){ const v=G[y][x]; if(v) G[N-1-y][x]=v; }
-  }
+
+  /* ① 金边：中心在 N/2-0.5（半格处），**必须在对称之前**做
+        —— 原来画在对称之后，导致左右差 4%（96 宽的网格半格错位） */
   if(p.goldEdge){ diaT(N/2-0.5,N/2-0.5,Math.round(N*0.47),3,1); }
-  normalizeGrid(colors);
-  // 覆盖率下限：花纹不足 52% 时补一层稀底纹，避免"素布感"
+
+  /* ② 覆盖率下限：花纹不足 52% 时补底纹（也在对称之前） */
   let on=0; for(let y=0;y<N;y++) for(let x=0;x<N;x++) if(G[y][x]) on++;
   if(on/(N*N) < 0.52){
     const fillC = LIGHT ? DK : MID[0];
-    for(let y=0;y<N;y+=2) for(let x=(y/2)%4;x<N;x+=4) if(!G[y][x]) P(x,y,fillC);
+    for(let y=0;y<N;y+=4) for(let x=((y/4)%2)*2;x<N;x+=4) if(!G[y][x]) P(x,y,fillC);
   }
+
+  /* ③ 颜色归一（放对称前，避免它改动像素后再破坏对称） */
+  normalizeGrid(colors);
+
+  /* ④ 严格对称：**无条件**镜像（原来写了 if(v)，右半边多出的像素抹不掉） */
+  const half=Math.ceil(N/2);
+  if(p.symmetry==="quad"){
+    for(let y=0;y<N;y++) for(let x=0;x<half;x++){
+      const v=G[y][x];
+      G[y][N-1-x]=v; G[N-1-y][x]=v; G[N-1-y][N-1-x]=v;
+    }
+  } else if(p.symmetry==="lr"){
+    for(let y=0;y<N;y++) for(let x=0;x<half;x++) G[y][N-1-x]=G[y][x];
+  } else if(p.symmetry==="tb"){
+    for(let y=0;y<half;y++) for(let x=0;x<N;x++) G[N-1-y][x]=G[y][x];
+  }
+
+  /* ⑤ 最后成对去孤立点：清左同步清右，保证清完仍然对称 */
+  G = despeckle(G, p.symmetry);
+
   return G;
 }
 function genDesign(seedStr){ const p=genParams(seedStr); buildParams(p); return p; }
@@ -2337,13 +2378,60 @@ const MOTIF_MEAN={oct:["八角花","八方来福 · 光明丰收"],swastika:["�
   scale:["鱼鳞纹","鳞次栉比 · 层叠有序"],fangshengM:["方胜纹","同心方胜 · 好事成双"],
   cross:["十字纹","四方安定 · 家宅平安"],bead:["连珠纹","珠联璧合 · 连绵不断"]};
 const PATS_KEY={oct:"BAJIAO",swastika:"WAN",yunlei:"YUNLEI",sun:"TAIYANG",qian:"QIAN",wave:"SHUI"};
+/* ── 图章对称化：镜像自洽（用"或"，不丢图案）──────────────────
+   motifStamp 的中心在偶数格上，裁剪后左右必然错位；此处兜底修正。 */
+function symmetrizeStamp(A, key){
+  const Sz=A.length, half=Math.ceil(Sz/2);
+  const out=A.map(function(r){ return r.slice(); });
+  if(key==="swastika"){                       /* 卍字：180° 中心对称（不是左右/上下对称，不可镜像） */
+    for(let y=0;y<half;y++) for(let x=0;x<half;x++){
+      const V = (A[y][x] || A[Sz-1-y][Sz-1-x]) ? 1 : 0;    /* 对角成对 */
+      out[y][x]=V; out[Sz-1-y][Sz-1-x]=V;
+      const W = (A[y][Sz-1-x] || A[Sz-1-y][x]) ? 1 : 0;    /* 另一对对角也成对 */
+      out[y][Sz-1-x]=W; out[Sz-1-y][x]=W;
+    }
+    return out;
+  }
+  const QUAD = ["oct","sun","qian","fangshengM","cross","bead","scale","yunlei"];
+  const quad = QUAD.indexOf(key) >= 0;
+  for(let y=0;y<half;y++) for(let x=0;x<half;x++){
+    const v1=A[y][x], v2=A[y][Sz-1-x], v3=A[Sz-1-y][x], v4=A[Sz-1-y][Sz-1-x];
+    if(quad){                                  /* 四向：四个镜像位取"或" */
+      const V = (v1||v2||v3||v4) ? 1 : 0;
+      out[y][x]=V; out[y][Sz-1-x]=V; out[Sz-1-y][x]=V; out[Sz-1-y][Sz-1-x]=V;
+    } else {                                   /* 左右：上、下半各自左右对称（保留上下差异，如鱼/凤）*/
+      const Vu = (v1||v2) ? 1 : 0, Vd = (v3||v4) ? 1 : 0;
+      out[y][x]=Vu; out[y][Sz-1-x]=Vu;
+      out[Sz-1-y][x]=Vd; out[Sz-1-y][Sz-1-x]=Vd;
+    }
+  }
+  return out;
+}
+function despeckleStamp(A){
+  const Sz=A.length;
+  const out=A.map(function(r){ return r.slice(); });
+  const NB=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+  for(let y=1;y<Sz-1;y++) for(let x=1;x<Sz-1;x++){
+    if(!A[y][x]) continue;
+    let same=0;
+    for(let i=0;i<NB.length;i++) if(A[y+NB[i][1]][x+NB[i][0]]) same++;
+    if(same===0){
+      out[y][x]=0;
+      out[y][Sz-1-x]=0;                        /* ← 补上行索引（原为 out[Sz-1-x]，把整行清成 0） */
+      out[Sz-1-y][x]=0;
+      out[Sz-1-y][Sz-1-x]=0;
+    }
+  }
+  return out;
+}
 function motifStamp(name,size){                   // 把程序化母题做成织机图章（布尔小网格）
   const saved=G; initG();
   const R=mulberry32(hashStr("stamp-"+name));
   drawMotif(name, Math.floor(N/2), Math.floor(N/2), Math.max(4,Math.round(size*0.44)), HI, R);
   const o=Math.floor(N/2)-Math.floor(size/2), out=[];
   for(let y=0;y<size;y++){ const row=[]; for(let x=0;x<size;x++){ row.push(!!G[o+y][o+x]); } out.push(row); }
-  G=saved; return out;
+  G=saved;
+  return despeckleStamp(symmetrizeStamp(out, name));      /* 对称化 + 去杂点后再交出 */
 }
 function loomMotifs(){                            // 织机母题库：16 款，全部程序化绘制
   return MOTIF_POOL.map(function(k){
